@@ -12,11 +12,19 @@ library(ggplot2)
 lintr::use_lintr(type = "tidyverse")
 
 predictors <- c(
-  "boundary", "dem", "slope", "dist_big_streams",
-  "dist_huge_streams", "flow_accumulation", "impervious"
-) # boundary means whether or not inside city boundary
+  "boundary", # ---------- 1: inside city boundary; 0: outside city boundary
+  "dem", # --------------- From DEM; meters
+  "slope", # ------------- Percentage rise
+  "dist_big_streams", # -- Distance (meters) to streams with drainage > 50 km2
+  "dist_huge_streams", # - Distance (meters) to streams with drainage > 100 km2
+  "flow_accumulation", # - Flow accumulation (number of cells)
+  "impervious" # --------- Impervious surface as percange of area
+)
 
-targets <- c("inundation_1pct", "inundation_10pct")
+targets <- c(
+  "inundation_1pct", # --- Percange area in 100-year (1%) inundated zone
+  "inundation_10pct" # --- Percange area in 10-year (10%) inundated zone
+)
 
 add_variables_from_csv <- function(city_fishnet, city_name, variable_list) {
   for (variable in variable_list) {
