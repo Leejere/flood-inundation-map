@@ -55,3 +55,58 @@ calgary <- st_read("data/fishnet-output/calgary_fishnet.shp") %>%
 denver <- st_read("data/fishnet-output/denver_fishnet.shp") %>%
   dplyr::select(id, geometry) %>%
   add_variables_from_csv("denver", predictors)
+
+# plot calgary fishnet
+ggplot() +
+  geom_sf(data=calgary, 
+          fill = "dark green", 
+          color = "dark green",
+          alpha = 0.6) +
+  labs(title="Calgary") +
+  mapTheme
+
+
+# plot calgary fishnet
+ggplot() +
+  geom_sf(data=denver, 
+          fill = "dark blue", 
+          color = "dark blue",
+          alpha = 0.6) +
+  labs(title="Denver") +
+  mapTheme
+
+# add spatial lags for calagry
+install.packages("spdep")
+library(spdep)
+calculate_spatial_lags <- function(data, targets, id_col = "id", geometry_col = "geometry") {
+  
+  # Create a neighbors list based on polygon contiguity
+  nb <- poly2nb(data, row.names = data[[id_col]])
+  
+  # Convert neighbors list to spatial weights matrix (row-standardized)
+  lw <- nb2listw(nb, style = "W")
+  
+  # Calculate spatial lags for each target variable
+  for (target in targets) {
+    lag_var_name <- paste0(target, "_spatial_lag")
+    data[[lag_var_name]] <- lag.listw(lw, data[[target]])
+  }
+  
+  return(data)
+}
+
+calgary <- calculate_spatial_lags(calgary, targets)
+
+# Correlation matrix
+
+## Convert the 'calgary' dataset to a regular data frame
+calgary_df <- as.data.frame(calgary) 
+
+## Remove non-numeric columns, including the 'geometry' column
+calgary_numeric <- calgary_df %>% dplyr::select(-id) %>% dplyr::select_if(is.numeric)
+
+## Calculate the correlation matrix
+correlation_matrix <- cor(calgary_numeric)
+
+library(corrplot)
+corrplot(correlation_matrix, method = "color", type = "lower", tl.col = "black", diag = FALSE)
