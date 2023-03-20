@@ -46,7 +46,7 @@ add_variables_from_csv <- function(city_fishnet, city_name, variable_list) {
   return(city_fishnet)
 }
 
-# Get the predictors
+# Get the predictors and target
 
 calgary <- st_read("data/fishnet-output/calgary_fishnet.shp") %>%
   dplyr::select(id, geometry) %>%
