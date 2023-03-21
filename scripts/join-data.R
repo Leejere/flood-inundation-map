@@ -56,7 +56,10 @@ denver <- st_read("data/fishnet-output/denver_fishnet.shp") %>%
   dplyr::select(id, geometry) %>%
   add_variables_from_csv("denver", predictors)
 
-# plot calgary fishnet
+View(calgary)
+View(denver)
+
+# plot Calgary fishnet
 ggplot() +
   geom_sf(data=calgary, 
           fill = "dark green", 
@@ -66,7 +69,7 @@ ggplot() +
   mapTheme
 
 
-# plot calgary fishnet
+# plot Denver fishnet
 ggplot() +
   geom_sf(data=denver, 
           fill = "dark blue", 
@@ -75,38 +78,59 @@ ggplot() +
   labs(title="Denver") +
   mapTheme
 
-# add spatial lags for calagry
+# add predictor spatial lags
 install.packages("spdep")
 library(spdep)
-calculate_spatial_lags <- function(data, targets, id_col = "id", geometry_col = "geometry") {
-  
-  # Create a neighbors list based on polygon contiguity
+
+predictors <- c(
+  "dem", # --------------- From DEM; meters
+  "slope", # ------------- Percentage rise
+  "dist_big_streams", # -- Distance (meters) to streams with drainage > 50 km2
+  "dist_huge_streams", # - Distance (meters) to streams with drainage > 100 km2
+  "flow_accumulation", # - Flow accumulation (number of cells)
+  "impervious" # --------- Impervious surface as percange of area
+)
+
+calculate_spatial_lags <- function(data, predictors, id_col = "id", geometry_col = "geometry") {
+  # Create neighbors list using the 'geometry' column
   nb <- poly2nb(data, row.names = data[[id_col]])
   
-  # Convert neighbors list to spatial weights matrix (row-standardized)
-  lw <- nb2listw(nb, style = "W")
+  # Create spatial weights matrix
+  swm <- nb2listw(nb, style = "W", zero.policy = TRUE)
   
-  # Calculate spatial lags for each target variable
-  for (target in targets) {
-    lag_var_name <- paste0(target, "_spatial_lag")
-    data[[lag_var_name]] <- lag.listw(lw, data[[target]])
+  # Calculate spatial lags for the specified predictor variables
+  for (predictor in predictors) {
+    spatial_lag_colname <- paste0("lag_", predictor)
+    predictor_values <- as.numeric(data[[predictor]])
+    data[[spatial_lag_colname]] <- lag.listw(swm, predictor_values, zero.policy = TRUE)
   }
   
   return(data)
 }
 
-calgary <- calculate_spatial_lags(calgary, targets)
 
-# Correlation matrix
+calgary_with_lags <- calculate_spatial_lags(calgary, predictors)
+denver_with_lags <- calculate_spatial_lags(denver, predictors)
+View(calgary_with_lags)
 
-## Convert the 'calgary' dataset to a regular data frame
-calgary_df <- as.data.frame(calgary) 
 
-## Remove non-numeric columns, including the 'geometry' column
-calgary_numeric <- calgary_df %>% dplyr::select(-id) %>% dplyr::select_if(is.numeric)
-
-## Calculate the correlation matrix
-correlation_matrix <- cor(calgary_numeric)
-
+# Calculate the correlation matrix
 library(corrplot)
-corrplot(correlation_matrix, method = "color", type = "lower", tl.col = "black", diag = FALSE)
+
+plot_correlation_matrix <- function(data, id_col = "id") {
+  # Convert the dataset to a regular data frame
+  data_df <- as.data.frame(data)
+  
+  # Remove non-numeric columns, including the 'id' column
+  data_numeric <- data_df %>% dplyr::select(-!!sym(id_col)) %>% dplyr::select_if(is.numeric)
+  
+  # Calculate the correlation matrix
+  correlation_matrix <- cor(data_numeric)
+  
+  # Create the correlation matrix plot
+  corrplot(correlation_matrix, method = "color", type = "lower", tl.col = "black", diag = FALSE)
+}
+
+plot_correlation_matrix(calgary_with_lags)
+plot_correlation_matrix(denver_with_lags)
+
