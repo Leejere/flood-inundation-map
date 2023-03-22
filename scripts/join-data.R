@@ -61,20 +61,24 @@ View(denver)
 
 # plot Calgary fishnet
 ggplot() +
-  geom_sf(data=calgary, 
-          fill = "dark green", 
-          color = "dark green",
-          alpha = 0.6) +
-  labs(title="Calgary")
+  geom_sf(
+    data = calgary,
+    fill = "dark green",
+    color = "dark green",
+    alpha = 0.6
+  ) +
+  labs(title = "Calgary") 
 
 
 # plot Denver fishnet
 ggplot() +
-  geom_sf(data=denver, 
-          fill = "dark blue", 
-          color = "dark blue",
-          alpha = 0.6) +
-  labs(title="Denver") +
+  geom_sf(
+    data = denver,
+    fill = "dark blue",
+    color = "dark blue",
+    alpha = 0.6
+  ) +
+  labs(title = "Denver") +
   mapTheme
 
 # add predictor spatial lags
@@ -93,24 +97,23 @@ predictors <- c(
 calculate_spatial_lags <- function(data, predictors, id_col = "id", geometry_col = "geometry") {
   # Create neighbors list using the 'geometry' column
   nb <- poly2nb(data, row.names = data[[id_col]])
-  
+
   # Create spatial weights matrix
   swm <- nb2listw(nb, style = "W", zero.policy = TRUE)
-  
+
   # Calculate spatial lags for the specified predictor variables
   for (predictor in predictors) {
     spatial_lag_colname <- paste0("lag_", predictor)
     predictor_values <- as.numeric(data[[predictor]])
     data[[spatial_lag_colname]] <- lag.listw(swm, predictor_values, zero.policy = TRUE)
   }
-  
+
   return(data)
 }
 
 
 calgary_with_lags <- calculate_spatial_lags(calgary, predictors)
 denver_with_lags <- calculate_spatial_lags(denver, predictors)
-View(calgary_with_lags)
 
 # EDA
 ##Calculate the correlation matrix
@@ -119,13 +122,15 @@ library(corrplot)
 plot_correlation_matrix <- function(data, id_col = "id") {
   # Convert the dataset to a regular data frame
   data_df <- as.data.frame(data)
-  
+
   # Remove non-numeric columns, including the 'id' column
-  data_numeric <- data_df %>% dplyr::select(-!!sym(id_col)) %>% dplyr::select_if(is.numeric)
-  
+  data_numeric <- data_df %>%
+    dplyr::select(-!!sym(id_col)) %>%
+    dplyr::select_if(is.numeric)
+
   # Calculate the correlation matrix
   correlation_matrix <- cor(data_numeric)
-  
+
   # Create the correlation matrix plot
   corrplot(correlation_matrix, method = "color", type = "lower", tl.col = "black", diag = FALSE)
 }
@@ -261,7 +266,5 @@ calgary_df <- binarize_values(calgary_df, "inundation_10pct", threshold = 0.5, i
 
 denver_df <- binarize_values(denver_df, "inundation_1pct", threshold = 0.5, include_threshold = TRUE)
 denver_df <- binarize_values(denver_df, "inundation_10pct", threshold = 0.5, include_threshold = TRUE)
-
-
 
 
