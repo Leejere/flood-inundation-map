@@ -228,7 +228,6 @@ denver_df <- categorize_by_fisher(data = denver_df, n_categories = 3, column = "
 # check
 glimpse((calgary_df))
 levels(calgary_df$dist_big_streams_categories)
-table(calgary_df$dist_big_streams_categories, useNA = "ifany")
 
 ### option 2 : log transform
 calgary_df$log_dist_big_streams <- log(calgary_df$dist_big_streams)
