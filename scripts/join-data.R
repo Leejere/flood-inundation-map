@@ -115,7 +115,6 @@ calculate_spatial_lags <- function(data, predictors, id_col = "id", geometry_col
 
 calgary_with_lags <- calculate_spatial_lags(calgary, predictors)
 denver_with_lags <- calculate_spatial_lags(denver, predictors)
-View(calgary_with_lags)
 
 
 # Calculate the correlation matrix
