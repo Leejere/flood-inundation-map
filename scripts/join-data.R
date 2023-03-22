@@ -65,8 +65,7 @@ ggplot() +
           fill = "dark green", 
           color = "dark green",
           alpha = 0.6) +
-  labs(title="Calgary") +
-  mapTheme
+  labs(title="Calgary")
 
 
 # plot Denver fishnet
@@ -113,8 +112,8 @@ calgary_with_lags <- calculate_spatial_lags(calgary, predictors)
 denver_with_lags <- calculate_spatial_lags(denver, predictors)
 View(calgary_with_lags)
 
-
-# Calculate the correlation matrix
+# EDA
+##Calculate the correlation matrix
 library(corrplot)
 
 plot_correlation_matrix <- function(data, id_col = "id") {
@@ -131,6 +130,138 @@ plot_correlation_matrix <- function(data, id_col = "id") {
   corrplot(correlation_matrix, method = "color", type = "lower", tl.col = "black", diag = FALSE)
 }
 
+# Call the function
 plot_correlation_matrix(calgary_with_lags)
 plot_correlation_matrix(denver_with_lags)
+
+
+## Function to plot histograms of the variables
+library(gridExtra)
+plot_histograms <- function(data, predictors) {
+  
+  # Initialize an empty list to store the plots
+  plots <- list()
+  
+  for (predictor in predictors) {
+    # Create a histogram for each predictor in the dataset
+    p <- ggplot(data, aes_string(predictor)) +
+      geom_histogram() + # Removed binwidth parameter
+      labs(title = paste("Histogram of", predictor),
+           x = predictor,
+           y = "Frequency") +
+      theme_minimal()
+    
+    # Add the histograms to the list
+    plots <- append(plots, list(p))
+  }
+  
+  # Arrange the plots in a grid with 3 columns and 2 rows
+  grid.arrange(grobs = plots, ncol = 3, nrow = 2)
+}
+
+
+# Call the function
+plot_histograms(calgary_df, predictors)
+plot_histograms(denver_df, predictors)
+
+#pairs(calgary_df_numeric)
+
+# feature engineering
+
+## transform sf_data to df
+tranform_df <- function(data, id_col = "id") {
+  data_df <- as.data.frame(data)
+  data_numeric <- data_df %>% dplyr::select(-!!sym(id_col)) %>% dplyr::select_if(is.numeric)
+  return(data_numeric)
+}
+
+calgary_df <- tranform_df(calgary)
+denver_df <- tranform_df(denver)
+
+## flow_accumulation
+
+calgary_df$log_flow_accumulation <- log(calgary_df$flow_accumulation)
+denver_df$log_flow_accumulation <- log(denver_df$log_flow_accumulation)
+
+
+## distance to streams
+### option 1 :categorize distance into bins
+
+library(classInt)
+
+# Function to categorize a column using the Fisher-Jenks method
+categorize_by_fisher <- function(data, n_categories, column) {
+  # Apply the Fisher-Jenks method
+  breaks_fisher <- classIntervals(
+    data[[column]],
+    n = n_categories,
+    style = "fisher"
+  )
+  
+  # Create the column name for the categorized data
+  new_column_name <- paste0(column, "_categories")
+  
+  # Categorize the column based on the calculated breaks
+  data[[new_column_name]] <- cut(
+    data[[column]],
+    breaks = c(breaks_fisher$brks),
+    labels = paste0("Category_", seq(1, n_categories)),
+    include.lowest = TRUE
+  )
+  
+  # Return the modified data frame with the new categorized column
+  return(data)
+}
+
+# Call the function
+calgary_df <- categorize_by_fisher(data = calgary_df, n_categories = 3, column = "dist_big_streams")
+calgary_df <- categorize_by_fisher(data = calgary_df, n_categories = 3, column = "dist_huge_streams")
+
+denver_df <- categorize_by_fisher(data = denver_df, n_categories = 3, column = "dist_big_streams")
+denver_df <- categorize_by_fisher(data = denver_df, n_categories = 3, column = "dist_huge_streams")
+
+# check
+glimpse((calgary_df))
+levels(calgary_df$dist_big_streams_categories)
+table(calgary_df$dist_big_streams_categories, useNA = "ifany")
+
+### option 2 : log transform
+calgary_df$log_dist_big_streams <- log(calgary_df$dist_big_streams)
+calgary_df$log_dist_huge_streams <- log(calgary_df$dist_huge_streams)
+
+denver_df$log_dist_big_streams <- log(denver_df$dist_big_streams)
+denver_df$log_dist_huge_streams <- log(denver_df$dist_huge_streams)
+
+
+## transform predicted variable
+
+# Function to binarize values in a data frame column based on a threshold
+binarize_values <- function(data, column, threshold, include_threshold = FALSE) {
+  if (include_threshold) {
+    # If the threshold value should be included as 1
+    binary_values <- as.integer(data[[column]] >= threshold)
+  } else {
+    # If the threshold value should be included as 0
+    binary_values <- as.integer(data[[column]] > threshold)
+  }
+  
+  # Create the new column name for the binary data
+  new_column_name <- paste0(column, "_binary")
+  
+  # Add the binary values column to the data frame
+  data[[new_column_name]] <- binary_values
+  
+  # Return the modified data frame with the new binary column
+  return(data)
+}
+
+# Call the function
+calgary_df <- binarize_values(calgary_df, "inundation_1pct", threshold = 0.5, include_threshold = TRUE)
+calgary_df <- binarize_values(calgary_df, "inundation_10pct", threshold = 0.5, include_threshold = TRUE)
+
+denver_df <- binarize_values(denver_df, "inundation_1pct", threshold = 0.5, include_threshold = TRUE)
+denver_df <- binarize_values(denver_df, "inundation_10pct", threshold = 0.5, include_threshold = TRUE)
+
+
+
 
