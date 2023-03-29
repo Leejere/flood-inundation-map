@@ -15,6 +15,9 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 # Introduction
+
+Link to video presentation : https://youtu.be/feObLhJLg7o
+
 Flooding is the most common natural disaster for cities living near water. With increasing frequency and severity due to factors such as climate change and urbanization, there is a growing need for accurate flood inundation probability maps to help communities prepare and mitigate impacts.
 
 The project aims to estimate a predictive flood inundation model that predicts the probability of an area being flooded. The model will be trained and validated using data from Calgary, Alberta (Canada) and used to predict flooding probability in Denver, a city with similar hydrologic and geographic features. This project will utilize both ArcGIS and R software to develop and analyze the flood inundation model. ArcGIS will be used to process and analyze spatial data, while R will be used for statistical analysis and machine learning algorithms. The resulting flood inundation probability maps will provide information of likelihood of flooding of Denver and provide a reference of flood inundation prediction model for other cities.
@@ -203,7 +206,7 @@ engineer_features_calgary <- function(data) {
       log_dist_big_streams = log(dist_big_streams),
       log_dist_huge_streams = log(dist_huge_streams),
       log_flow_accumulation = log(flow_accumulation),
-      inundated = ifelse(inundation_10pct > 0.5, 1, 0)
+      inundated = ifelse(inundation_1pct > 0.5, 1, 0)
     )
   return(data)
 }
@@ -221,7 +224,7 @@ engineer_features_denver <- function(data) {
 }
 ```
 
-As for the target variable `inundated`, which was binarized from the original variable `inundation_10pct`, percentage area in 10-year (10%) inundated zone.  The inundated variable was assigned a value using an ifelse statement. If the inundation_1pct variable was greater than 0.5, then the inundated variable was assigned a value of `1`, which is positive in inundation. Otherwise, the inundated variable was assigned a value of `0`.
+As for the target variable `inundated`, which was binarized from the original variable `inundation_1pct`, percentage area in 100-year (1%) inundated zone.  The inundated variable was assigned a value using an ifelse statement. If the inundation_1pct variable was greater than 0.5, then the inundated variable was assigned a value of `1`, which is positive in inundation. Otherwise, the inundated variable was assigned a value of `0`.
 
 ```{r data, warning = FALSE, message = FALSE}
 # Get the predictors and target
