@@ -67,7 +67,7 @@ ggplot() +
     color = "dark green",
     alpha = 0.6
   ) +
-  labs(title = "Calgary") 
+  labs(title = "Calgary")
 
 
 # plot Denver fishnet
@@ -79,7 +79,7 @@ ggplot() +
     alpha = 0.6
   ) +
   labs(title = "Denver") +
-  mapTheme
+  map_theme
 
 # add predictor spatial lags
 install.packages("spdep")
@@ -116,7 +116,7 @@ calgary_with_lags <- calculate_spatial_lags(calgary, predictors)
 denver_with_lags <- calculate_spatial_lags(denver, predictors)
 
 # EDA
-##Calculate the correlation matrix
+## Calculate the correlation matrix
 library(corrplot)
 
 plot_correlation_matrix <- function(data, id_col = "id") {
@@ -143,23 +143,24 @@ plot_correlation_matrix(denver_with_lags)
 ## Function to plot histograms of the variables
 library(gridExtra)
 plot_histograms <- function(data, predictors) {
-  
   # Initialize an empty list to store the plots
   plots <- list()
-  
+
   for (predictor in predictors) {
     # Create a histogram for each predictor in the dataset
     p <- ggplot(data, aes_string(predictor)) +
       geom_histogram() + # Removed binwidth parameter
-      labs(title = paste("Histogram of", predictor),
-           x = predictor,
-           y = "Frequency") +
+      labs(
+        title = paste("Histogram of", predictor),
+        x = predictor,
+        y = "Frequency"
+      ) +
       theme_minimal()
-    
+
     # Add the histograms to the list
     plots <- append(plots, list(p))
   }
-  
+
   # Arrange the plots in a grid with 3 columns and 2 rows
   grid.arrange(grobs = plots, ncol = 3, nrow = 2)
 }
@@ -169,14 +170,16 @@ plot_histograms <- function(data, predictors) {
 plot_histograms(calgary_df, predictors)
 plot_histograms(denver_df, predictors)
 
-#pairs(calgary_df_numeric)
+# pairs(calgary_df_numeric)
 
 # feature engineering
 
 ## transform sf_data to df
 tranform_df <- function(data, id_col = "id") {
   data_df <- as.data.frame(data)
-  data_numeric <- data_df %>% dplyr::select(-!!sym(id_col)) %>% dplyr::select_if(is.numeric)
+  data_numeric <- data_df %>%
+    dplyr::select(-!!sym(id_col)) %>%
+    dplyr::select_if(is.numeric)
   return(data_numeric)
 }
 
@@ -202,10 +205,10 @@ categorize_by_fisher <- function(data, n_categories, column) {
     n = n_categories,
     style = "fisher"
   )
-  
+
   # Create the column name for the categorized data
   new_column_name <- paste0(column, "_categories")
-  
+
   # Categorize the column based on the calculated breaks
   data[[new_column_name]] <- cut(
     data[[column]],
@@ -213,7 +216,7 @@ categorize_by_fisher <- function(data, n_categories, column) {
     labels = paste0("Category_", seq(1, n_categories)),
     include.lowest = TRUE
   )
-  
+
   # Return the modified data frame with the new categorized column
   return(data)
 }
@@ -248,13 +251,13 @@ binarize_values <- function(data, column, threshold, include_threshold = FALSE) 
     # If the threshold value should be included as 0
     binary_values <- as.integer(data[[column]] > threshold)
   }
-  
+
   # Create the new column name for the binary data
   new_column_name <- paste0(column, "_binary")
-  
+
   # Add the binary values column to the data frame
   data[[new_column_name]] <- binary_values
-  
+
   # Return the modified data frame with the new binary column
   return(data)
 }
@@ -265,5 +268,3 @@ calgary_df <- binarize_values(calgary_df, "inundation_10pct", threshold = 0.5, i
 
 denver_df <- binarize_values(denver_df, "inundation_1pct", threshold = 0.5, include_threshold = TRUE)
 denver_df <- binarize_values(denver_df, "inundation_10pct", threshold = 0.5, include_threshold = TRUE)
-
-

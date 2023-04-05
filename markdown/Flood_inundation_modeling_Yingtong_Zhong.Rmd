@@ -1,0 +1,603 @@
+---
+title: "Estimating Flood Inundation By \"Borrowing\" Experience From Another City"
+author: "Jie Li, Yingtong Zhong"
+date: "2023-03-28"
+output:
+  html_document: 
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    theme: journal
+    fig_caption: yes
+  pdf_document: default
+monofont: Hack
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, cache=FALSE, results="hide", message=FALSE, warning=FALSE)
+```
+
+>Link to video presentation : https://youtu.be/feObLhJLg7o
+
+# Introduction
+
+Flooding is the most common natural disaster for cities near water. With increasing frequency and severity due to factors such as climate change and urbanization, there is growing need for accurate flood inundation maps to help communities prepare and mitigate impacts.
+
+Maps representing flood inundation zones are available in many cities. However, when such a map is not available, it is possible to estimate flood inundation zones by "borrowing" the experience from another city where such maps are available. In such cases, flood inundation (target variable) is assumed to be a function of some other factors (predictors), for which data is more available. By studying the relationships between flood inundation and the predictors in city A, we may be able to predict flood inundation in city B, which lacks a flood inundation map but has data on the predictors.
+
+# Predictors and Workflow
+
+This project is a proof-of-concept for such a methodology. Here, we use data from Calgary, Alberta, Canada, to develop a model that can predict flood inundation zones in Denver, Colorado, USA. The binomial model is used to to deliver the prediction. The following presents the predictors used to predict flood inundation and the associated assumptions
+
+- Elevation (from a digital elevation model): Locations with lower elevation are more likely to be inundated than those with higher elevation.
+- Slope (derived from elevation data): Locations with steeper slope are less likely to be inundated.
+- Flood accumulation, or the drainage area of each location. Locations with higher flood accumulation are more likely to be inundated.
+- Proximity to streams. Locations closer to streams, especially larger streams, are more likely to be inundated. The "streams" here are assumed to be those locations whose drainage area is greater than a certain threshold.
+- Impervious zones. Locations whose surface is impervious are more likely to be inundated.
+
+As a proof-of-concept, this project follows the the below workflow:
+
+1. Getting and pre-processing data for both Calgary and Denver.
+2. Use a grid system, or "fishnet" to cover Calgary and Denver. Use the grid cell as the unit of analysis and calculate the average predictor/target values for each cell.
+3. For Calgary, use part of the grid cells to build a model predicting flood inundation using the predictors while holding out the other cells.
+4. Test the model on the held-out cells and calculate model metrics.
+5. Train the model on the entirety of Calgary. Use the model on Denver to predict its flood inundation zone.
+
+
+```{r libraries, warning = FALSE, message = FALSE}
+library(plotROC)
+library(tidyverse)
+library(sf)
+library(ggplot2)
+library(spdep)
+library(caTools)
+library(plotROC)
+library(caret)
+library(pROC)
+library(viridis)
+library(gridExtra)
+library(cowplot)
+library(patchwork)
+```
+
+```{r plot-themes, warning = FALSE, echo=TRUE}
+plot_theme <- function(
+    title_size = 18,
+    subtitle_size = 16,
+    label_size = 14,
+    tick_size = 12) {
+  theme_minimal() +
+    theme(
+      axis.text.x = element_text(color = "grey60", size = tick_size),
+      axis.text.y = element_text(color = "grey60", size = tick_size),
+      axis.title.x = element_text(color = "grey20", size = label_size),
+      axis.title.y = element_text(color = "grey20", size = label_size),
+      plot.title = element_text(color = "gray20", size = title_size),
+      plot.subtitle = element_text(color = "gray40", size = subtitle_size),
+      axis.line.x = element_line(size = 0.5, colour = "gray10"),
+      strip.text = element_text(size = subtitle_size, face = "bold")
+    )
+}
+map_theme <- function(
+    title_size = 18,
+    subtitle_size = 16,
+    label_size = 14,
+    tick_size = 11) {
+  plot_theme(title_size, subtitle_size) +
+    theme(
+      axis.line = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      legend.background = element_blank(),
+      legend.title = element_text(size = label_size),
+      legend.text = element_text(size = tick_size),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      panel.border = element_blank(),
+      axis.line.x = element_blank(),
+      legend.spacing.y = unit(0.6, "cm"),
+    )
+}
+palette_blue_5 <- list("#ffffff", "#c6c7eb", "#8e8fd7", "#5557c3", "#353797")
+```
+
+# Data Processing
+
+**Obtaining data**. Calgary's [Open Data Portal](https://data.calgary.ca/) provides data of flood inundation maps for 10-year or 100-year floods. It also provides impervious surface data which also acted as a predictor. The other predictors were all derived from elevation data, accessed through ESRI's "Terrain" dataset in "Living Atlas". For the test city, Denver, the impervious surface data came from the Denver [Open Data Catalog](https://denvergov.org/opendata), and the elevation data was also accessed through ESRI's "Terrain" dataset in "Living Atlas".
+
+**Pre-processing data**. We employed a series of tools in ArcGIS Pro to process elevation data.
+
+1. We calculated the slope (percentage rise) of each cell using the "Slope" tool.
+2. Using the "Flow Direction" and "Flow Accumulation" tools, we calculated the drainage area of each cell (presented by the number of cells from which water would flow to the cell of interest).
+3. We identified the "streams" as the locations whose drainage areas exceeded certain thresholds. In this case, locations whose drainage areas larger than 50 square kilometers are considered "big streams", and 100 square kilometers "huge streams".
+4. We calculated each cell's euclidean distance to the "big streams" and the "huge streams".
+
+After this process, we used the "Zonal Statistics As Table" tool to aggregate the predictor and target values into each fishnet. All the data tables are exported and joined together in R. The predictors and target variables are specified in the following code snippet.
+
+```{r features and target variables}
+predictors <- c(
+  "dem", # --------------- From DEM; meters
+  "slope", # ------------- Percentage rise
+  "dist_big_streams", # -- Distance (meters) to streams with drainage > 50 km2
+  "dist_huge_streams", # - Distance (meters) to streams with drainage > 100 km2
+  "flow_accumulation", # - Flow accumulation (number of cells)
+  "impervious" # --------- Impervious surface as percentage of area
+)
+
+targets <- c(
+  "inundation_1pct", # --- Percentage area in 100-year (1%) inundated zone
+  "inundation_10pct" # --- Percentage area in 10-year (10%) inundated zone
+)
+```
+
+
+```{r add_data, message= FALSE, warning = FALSE}
+add_variables_from_csv <- function(
+    city_fishnet, # --------A geo-dataframe with fishnet data (empty)
+    city_name, # -----------Name of the city (Calgary or Denver)
+    variable_list # --------List of variables to add
+    ) {
+  for (variable in variable_list) {
+    path <- paste0(
+      "data/fishnet-output/tbl_", city_name, "_", variable, ".csv"
+    )
+    data <- read.csv(path) %>%
+      rename(id := OID_, !!variable := value)
+    city_fishnet <- city_fishnet %>%
+      left_join(data, by = "id")
+  }
+
+  city_fishnet <- city_fishnet %>%
+    # Remove cells that are not within the city boundary
+    filter(boundary > 0.9) %>%
+    dplyr::select(-boundary)
+
+  return(city_fishnet)
+}
+
+calgary <- st_read("../data/fishnet-output/calgary_fishnet.shp") %>%
+  dplyr::select(id, geometry) %>%
+  add_variables_from_csv("calgary", c(predictors, targets, "boundary"))
+
+denver <- st_read("../data/fishnet-output/denver_fishnet.shp") %>%
+  dplyr::select(id, geometry) %>%
+  add_variables_from_csv("denver", c(predictors, "boundary"))
+```
+
+## Exploratory analysis
+
+```{r plot-hist-calgary, warning = FALSE, message = FALSE}
+plot_histograms <- function(city_fishnet, predictors) {
+  plot <- city_fishnet %>%
+    as.data.frame() %>%
+    dplyr::select(predictors) %>%
+    dplyr::select_if(is.numeric) %>%
+    gather(key = "variable", valu = "value") %>%
+    ggplot() +
+    geom_histogram(aes(value), fill = palette_blue_5[2]) +
+    facet_wrap(~variable, scales = "free", nrow = 2) +
+    plot_theme(title_size = 25)
+  return(plot)
+}
+calgary %>%
+  plot_histograms(predictors)
+```
+
+Below are the histograms of `Denver` dataset.
+```{r plot-hist-denver warning = FALSE, message = FALSE}
+denver %>% plot_histograms(predictors)
+```
+
+```{r plot-target, warning = FALSE, message = FALSE}
+threshold_flood <- 0.3
+calgary <- calgary %>%
+  mutate(
+    inundated_1pct = ifelse(inundation_1pct > threshold_flood, TRUE, FALSE),
+    inundated_10pct = ifelse(inundation_10pct > threshold_flood, TRUE, FALSE)
+  )
+
+calgary %>%
+  dplyr::select(inundated_1pct, inundated_10pct) %>%
+  st_drop_geometry() %>%
+  gather(key = "variable", value = "value") %>%
+  ggplot(aes(x = factor(value))) +
+  geom_bar(aes(fill = variable), position = "dodge") +
+  facet_wrap(~variable, scales = "free") +
+  plot_theme()
+```
+
+```{r map-target warning = FALSE, message = FALSE}
+calgary_boundary <- st_read("data/shapefiles/calgary_boundary.shp") %>%
+  st_transform(st_crs(calgary))
+
+make_map <- function(city_fishnet, city_boundary, variable_list, legend_name) {
+  plot <- city_fishnet %>%
+    dplyr::select(all_of(variable_list)) %>%
+    gather(key = "type", value = !!sym(legend_name), -geometry) %>%
+    ggplot() +
+    geom_sf(aes_string(fill = legend_name), color = NA) +
+    scale_fill_continuous(low = "white", high = palette_blue_5[4]) +
+    geom_sf(data = city_boundary, fill = NA, color = palette_blue_5[[2]]) +
+    facet_wrap(~type) +
+    map_theme()
+  return(plot)
+}
+
+make_map(
+  calgary, calgary_boundary,
+  c("inundation_1pct", "inundation_10pct"),
+  "pct_inundated"
+)
+```
+
+```{r map-predictors-calgary, warning = FALSE, message = FALSE}
+scale_0to1 <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+calgary %>%
+  dplyr::select(all_of(predictors)) %>%
+  mutate_at(predictors, scale_0to1) %>% # Scale all predictors to 0-1
+  make_map(calgary_boundary, predictors, "value_scaled")
+```
+
+```{r map-predictors-denver, warning = FALSE, message = FALSE}
+denver_boundary <- st_read("data/shapefiles/denver_boundary.shp") %>%
+  st_transform(st_crs(denver))
+denver %>%
+  dplyr::select(all_of(predictors)) %>%
+  mutate_at(predictors, scale_0to1) %>% # Scale all predictors to 0-1
+  make_map(denver_boundary, predictors, "value_scaled")
+```
+
+```{r engineer_features, warning = FALSE, message = FALSE}
+engineer_features <- function(data) {
+  data <- data %>%
+    mutate(
+      log_dist_big_streams = log(dist_big_streams + 1),
+      log_dist_huge_streams = log(dist_huge_streams + 1),
+      log_flow_accumulation = log(flow_accumulation + 1),
+      log_slope = log(slope + 1)
+    )
+  return(data)
+}
+calgary <- calgary %>% engineer_features()
+denver <- denver %>% engineer_features()
+```
+
+```{r plot-engineered-calgary}
+predictors_used <- c(
+  "dem", # --------------- From DEM; meters
+  "log_slope", # ------------- Percentage rise
+  "log_dist_big_streams",
+  "log_dist_huge_streams",
+  "log_flow_accumulation",
+  "impervious" # --
+)
+calgary %>% plot_histograms(
+  predictors_used
+)
+```
+
+```{r plot-engineered-denver}
+denver %>% plot_histograms(
+  predictors_used
+)
+```
+
+```{r map-engineered-calgary, warning = FALSE, message = FALSE}
+calgary %>%
+  dplyr::select(all_of(predictors_used)) %>%
+  mutate_at(predictors_used, scale_0to1) %>% # Scale all predictors_used to 0-1
+  make_map(calgary_boundary, predictors_used, "value_scaled")
+```
+
+```{r map-engineered-denver, warning = FALSE, message = FALSE}
+denver %>%
+  dplyr::select(all_of(predictors_used)) %>%
+  mutate_at(predictors_used, scale_0to1) %>% # Scale all predictors_used to 0-1
+  make_map(denver_boundary, predictors_used, "value_scaled")
+```
+
+## Mapping
+
+As for the target variable `inundated`, which was binarized from the original variable `inundation_1pct`, percentage area in 100-year (1%) inundated zone.  The inundated variable was assigned a value using an ifelse statement. If the inundation_1pct variable was greater than 0.5, then the inundated variable was assigned a value of `1`, which is positive in inundation. Otherwise, the inundated variable was assigned a value of `0`.
+
+In the context of spatial analysis, it is important to account for spatial autocorrelation, which is the tendency for the values of a variable to be more similar at nearby locations than at distant ones. The `calculate_spatial_lags` function is used to address this issue by generating spatial lag variables, which are the weighted averages of the values of a variable in the neighboring locations. Incorporating spatial lags into our model helps capture the spatial patterns and dependencies within the data, leading to more accurate and reliable predictions.
+
+```{r spatial_lags, warning = FALSE, message = FALSE}
+# add predictor spatial lags
+
+calculate_spatial_lags <-
+  function(fishnet, predictors, id_col = "id", geometry_col = "geometry") {
+    # Create neighbors list using the 'geometry' column
+    nb <- poly2nb(fishnet, row.names = fishnet[[id_col]])
+
+    # Create spatial weights matrix
+    swm <- nb2listw(nb, style = "W", zero.policy = TRUE)
+
+    # Calculate spatial lags for the specified predictor variables
+    for (predictor in predictors) {
+      spatial_lag_colname <- paste0("lag_", predictor)
+      predictor_values <- as.numeric(fishnet[[predictor]])
+      fishnet[[spatial_lag_colname]] <-
+        lag.listw(swm, predictor_values, zero.policy = TRUE)
+    }
+
+    return(fishnet)
+  }
+
+lag_predictors_used <- predictors_used %>%
+  sapply(., function(x) {
+    paste0("lag_", x)
+  }) %>%
+  unname()
+
+all_predictors_used <- c(predictors_used, lag_predictors_used)
+target_used <- c("inundated_10pct")
+
+calgary_ready <- calgary %>%
+  calculate_spatial_lags(predictors_used) %>%
+  dplyr::select(all_of(c(all_predictors_used, target_used)), id)
+
+denver_ready <- denver %>%
+  calculate_spatial_lags(predictors_used) %>%
+  dplyr::select(all_of(all_predictors_used), id)
+```
+
+# Model building
+
+## Partition training and test sets 
+
+To build the model, relevant features and the target variable were selected, and then the data was randomly split into training (75%) and testing (25%) sets. 
+
+```{r train-test-split, warning = FALSE, message = FALSE}
+train_ratio <- 0.75
+sample <- sample.split(calgary_ready$inundated, SplitRatio = train_ratio)
+train <- subset(calgary_ready, sample == TRUE)
+test <- subset(calgary_ready, sample == FALSE)
+```
+
+
+## Train a logistic model
+
+The training set was used to train a logistic model using the `glm()` function, which specified the target variable ` inundated `and all other predictors. The predict function was then used to generate predicted probabilities for the `test` dataset, which was stored in the `predicted_probs` column.
+
+```{r train-model, warning = FALSE, message = FALSE}
+train_model <- glm(
+  inundated_10pct ~ ., train %>% dplyr::select(-id) %>% st_drop_geometry(),
+  family = "binomial"(link = "logit")
+)
+
+test$predicted_probs <- predict(train_model, test, type = "response")
+```
+
+## Model summary
+The summary output of the training logistic model provides the results of the logistic regression model. The summary shows which features are statistically significant in predicting the target variable in Calgary. In this case, the features `dem`, `slope`, `log_flow_accumulation`, `lag_dem`, `lag_log_dist_big_streams`, `lag_log_dist_huge_streams`, and `lag_impervious` were found to be statistically significant in predicting the target variable. This means that these features have a significant impact on the likelihood of an area being inundated.
+
+```{r model-summary, warning = FALSE, message = FALSE}
+summary(train_model)
+```
+
+After identifying the statistically significant features, maps of those features were plot to visualize the spatial distribution of Calgary.
+
+# Model evaluation
+
+## Probability density plots
+
+The summary output only gives the overall AIC model performance and statistically significant features. However, the summary could not evaluate the error and accuracy. 
+
+```{r probability-plot, warning = FALSE, message = FALSE}
+ggplot(test, aes(x = predicted_probs, fill = as.factor(inundated_10pct))) +
+  geom_density() +
+  facet_grid(inundated_10pct ~ ., scales = "free") +
+  xlim(-0.1, 1) +
+  labs(
+    x = "Predicted Probability of Inundation",
+    y = "Probability Density",
+    title = "Distribution of predicted probabilities by observed outcome"
+  ) +
+  scale_fill_manual(
+    values = c(palette_blue_5[[4]], palette_blue_5[[2]]),
+    name = "Inundated"
+  ) +
+  geom_vline(xintercept = .5) +
+  plot_theme()
+```
+
+To take a closer look, probability density plots were generated to show the distribution of predicted probabilities of inundation for the test set. The plots are arranged in a grid, with one plot for each value of the inundated variable. The blue plot represents areas that are not inundated, while the red plot represents areas that are inundated. The vertical line represents a 0.5 probability of inundation. If predicted probability is below 0.5, the predicted class is `0` (not inundated) and vice verses. 
+
+From the plot, we can observe that the False Negative rate is rather high. This indicates that there are cases where the actual class is `1` (inundated), but the model incorrectly assigns a predicted class of `0` (not inundated) due to the predicted probability being below 0.5. This suggests that the model may not be accurately identifying areas that are likely to be inundated. 
+
+Although the False Negative rate is high, the plot reveals a high True Positive rate. This means that the model is correctly predicting areas that are likely to be inundated, with a high probability. The high True Positive rate is encouraging, as it indicates that the model has some predictive power and can be useful in identifying areas that are vulnerable to flooding. However, it is still important to address the False Negative rate to improve the model's accuracy and reliability.
+
+## ROC and AUC plots
+The plot below shows the ROC curve and AUC for the model. The AUC value of 0.99 indicates that the model has a very high degree of accuracy in predicting whether an area will be inundated or not. However, it has potential to be overfitting with new datasets.
+
+```{r roc-auc, warning = FALSE, message = FALSE}
+roc_data <- data.frame(
+  D = as.logical(test$inundated_10pct),
+  M = test$predicted_probs
+)
+
+ggplot(roc_data, aes(d = D, m = M)) +
+  geom_roc(color = palette_blue_5[[4]]) +
+  geom_abline(slope = 1, intercept = 0, linewidth = 1.5, color = "grey") +
+  labs(
+    title = "ROC Curve",
+    subtitle = paste(
+      "Area Under Curve (AUC):",
+      round(auc(pROC::roc(test$inundated, test$predicted_probs)), 4)
+    ),
+    x = "False Positive Rate (FPR)",
+    y = "True Positive Rate (TPR)"
+  ) %>%
+  plot_theme()
+```
+
+```{r cross-validation, warning = FALSE, message = FALSE}
+ctrl <- trainControl(
+  method = "cv", number = 100, classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+cv_fit <- train(
+  inundated_10pct ~ .,
+  calgary_ready %>%
+    dplyr::select(-id) %>%
+    st_drop_geometry() %>%
+    mutate(inundated_10pct = as.factor(
+      ifelse(inundated_10pct == TRUE, "inundated", "not_inundated")
+    )),
+  method = "glm", family = "binomial", trControl = ctrl, metric = "ROC"
+)
+cv_fit
+```
+
+```{r sensitivity-specificity, warning = FALSE, message = FALSE}
+calculate_metrics <- function(data, threshold) {
+  prediction <- data$predicted_probs > threshold
+  true_positive <- sum(prediction & data$inundated_10pct)
+  false_positive <- sum(prediction & !data$inundated_10pct)
+  true_negative <- sum(!prediction & !data$inundated_10pct)
+  false_negative <- sum(!prediction & data$inundated_10pct)
+
+  sensitivity <- true_positive / (true_positive + false_negative)
+  specificity <- true_negative / (true_negative + false_positive)
+
+  return(data.frame(
+    threshold = threshold, sensitivity = sensitivity,
+    specificity = specificity
+  ))
+}
+
+thresholds <- seq(0, 0.1, by = 0.001)
+metrics <- lapply(thresholds, function(t) calculate_metrics(test, t))
+metrics <- do.call(rbind, metrics)
+
+metrics %>%
+  gather(key = "metric", value = "value", -threshold) %>%
+  ggplot(aes(x = threshold, y = value, color = metric)) +
+  geom_line() +
+  labs(
+    title = "Sensitivity and Specificity by Threshold",
+    x = "Threshold",
+    y = "Metric"
+  ) +
+  plot_theme()
+```
+
+```{r map-errors}
+draw_predict_outcome <- function(data, threshold, show_legend = FALSE) {
+  data$predicted_probs <- predict(
+    train_model, data,
+    type = "response"
+  )
+
+  data <- data %>%
+    mutate(
+      predicted = ifelse(predicted_probs > threshold, 1, 0),
+      outcome = case_when(
+        predicted == 1 & inundated_10pct == 1 ~ "True Positive",
+        predicted == 1 & inundated_10pct == 0 ~ "False Positive",
+        predicted == 0 & inundated_10pct == 1 ~ "False Negative",
+        predicted == 0 & inundated_10pct == 0 ~ "True Negative"
+      )
+    )
+
+  plot <- ggplot(data) +
+    geom_sf(aes(fill = outcome), color = NA) +
+    labs(
+      title = "Predicted Inundation",
+      subtitle = paste(
+        "Threshold:",
+        threshold
+      ),
+      fill = "Outcome"
+    ) +
+    scale_fill_manual(
+      values = c(
+        "True Positive" = palette_blue_5[[4]],
+        "False Positive" = palette_blue_5[[2]],
+        "False Negative" = "#c35557",
+        "True Negative" = "white"
+      ),
+      name = "Outcome",
+      labels = c(
+        "True Positive" = "Risk correctly identified",
+        "False Positive" = "Risk overestimated",
+        "False Negative" = "Risk underestimated",
+        "True Negative" = "No-risk correctly identified"
+      )
+    ) +
+    geom_sf(data = calgary_boundary, color = palette_blue_5[[2]], fill = NA) +
+    map_theme()
+
+  if (show_legend == FALSE) {
+    plot <- plot + theme(legend.position = "none")
+  }
+
+  return(plot)
+}
+library(ggpubr)
+library(cowplot)
+plot_01 <- draw_predict_outcome(calgary_ready, 0.02, FALSE)
+plot_02 <- draw_predict_outcome(calgary_ready, 0.1, FALSE)
+plot_03 <- draw_predict_outcome(calgary_ready, 0.2, FALSE)
+
+shared_legend <- cowplot::get_legend(
+  draw_predict_outcome(calgary_ready, 0.1, TRUE)
+)
+grid.arrange(
+  plot_01, plot_02, plot_03, shared_legend,
+  ncol = 4, widths = c(1, 1, 1, 1)
+)
+```
+
+# Map prediction
+
+## Train on entire Calgary
+To generated predicted inundation, the entire Calgray dataset` calgary_for_model` was used to create a logistic regression model. where the target variable is inundated, and all other variables are predictors. After training the model, the `predict` function is used to generate predicted probabilities for the entire Calgary dataset. The predicted probabilities are stored in the `calgary_for_model$predicted_probs` column.
+
+```{r model2, warning = FALSE, message = FALSE}
+entire_model <- glm(
+  inundated_10pct ~ .,
+  calgary_ready %>% dplyr::select(-id) %>% st_drop_geometry(),
+  family = "binomial"(link = "logit")
+)
+```
+
+## Predicted inundation map Denver
+
+Then the entire Calgary trained trained logistic regression model was used to predict inundation probabilities for the Denver dataset. The predict function is used to generate predicted probabilities for the Denver dataset using the model object created previously. The predicted probabilities are then stored in the `predicted_probs` column of the `denver_used` dataset and mapped using `ggplot`. This step allows us to apply the model to new data and evaluate how well it generalizes to other areas.
+
+Though the predicted probabilities for Denver were comparatively small, the predicted class were distinguishable in 
+
+
+```{r inundation_denver, warning = FALSE, message = FALSE}
+denver_ready$predicted_probs <- predict(
+  entire_model, denver_ready,
+  type = "response"
+)
+
+ggplot() +
+  geom_sf(data = denver_ready, aes(fill = predicted_probs), color = NA) +
+  scale_fill_gradient(
+    low = "white", high = palette_blue_5[[5]],
+    name = "Predicted probability"
+  ) +
+  geom_sf(data = denver_boundary, color = palette_blue_5[[2]], fill = NA) +
+  labs(title = "Predicted inundation") +
+  map_theme()
+```
+
+
+# Summary
+This project aimed to estimate flood inundation probabilities using a predictive model for the cities of Calgary and Denver. Using logistic regression models, the prediction performance was evaluated using a confusion matrix and an ROC curve, which indicated an AUC of 0.99 and overall good performance.
+
+However, the predicted probabilities for Denver were comparatively small, indicating a limitation in the model's ability to generalize to new areas. Furthermore, the AUC is unusually high which might indicate potential overfitting problems. For future improvement, one possible consideration is to validate the model using additional cities, which could make the model more rigorous and accurate in predicting flood inundation probabilities for new locations.
